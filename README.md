@@ -4,7 +4,7 @@ Claude Code skills by zippoxer.
 
 ## Skills
 
-- **[subcodex](#subcodex)** — Collaborate with Codex (GPT-5.2) via persistent named sessions
+- **[subcodex](#subcodex)** — Spawn and collaborate with Codex subagents
 - **[stealth-browser](#stealth-browser)** — Browser automation with Cloudflare/anti-bot bypass
 
 ## Installation
