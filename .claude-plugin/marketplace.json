@@ -1,0 +1,28 @@
+{
+  "name": "zippoxer-skills",
+  "owner": {
+    "name": "zippoxer"
+  },
+  "plugins": [
+    {
+      "name": "subcodex",
+      "source": "./",
+      "description": "Named Codex sessions for Claude Code - collaborate with GPT-5.2 via persistent sessions",
+      "strict": false,
+      "keywords": ["codex", "openai", "gpt-5", "sessions", "collaboration"],
+      "skills": ["./skills/subcodex"]
+    },
+    {
+      "name": "stealth-browser",
+      "source": "./",
+      "description": "Browser automation with anti-bot/Cloudflare bypass using nodriver",
+      "strict": false,
+      "keywords": ["browser", "automation", "cloudflare", "stealth", "nodriver", "scraping"],
+      "skills": ["./skills/stealth-browser"]
+    }
+  ],
+  "metadata": {
+    "description": "Claude Code skills by zippoxer",
+    "version": "1.0.0"
+  }
+}

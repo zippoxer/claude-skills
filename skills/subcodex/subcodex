@@ -1,0 +1,793 @@
+#!/bin/bash
+# subcodex - Named Codex sessions for Claude Code integration
+
+set -e
+
+SUBCODEX_DIR="$HOME/.subcodex"
+SESSIONS_FILE="$SUBCODEX_DIR/sessions.json"
+CONVERSATIONS_DIR="$SUBCODEX_DIR/conversations"
+CONFIG_FILE="$SUBCODEX_DIR/config.json"
+CODEX_SESSIONS_DIR="$HOME/.codex/sessions"
+
+DEFAULT_CONFIG='{
+  "web-search": true,
+  "mode": "dangerous",
+  "model": "gpt-5.2",
+  "reasoning": "high",
+  "review-reasoning": "xhigh"
+}'
+
+show_help() {
+  cat <<'EOF'
+Usage:
+  subcodex new <name> "prompt"           Create new session
+  subcodex new <name> <<'EOF'...EOF      Create with heredoc
+  subcodex resume <name> "prompt"        Resume existing session
+  subcodex resume <name> <<'EOF'...EOF   Resume with heredoc
+  subcodex list                          List all sessions
+  subcodex review [options] <name>       Code review session
+  subcodex import --name <n> --uuid <u>  Import existing Codex session
+
+Review options:
+  --uncommitted       Review uncommitted changes
+  --base <branch>     Review against base branch
+  --commit <sha>      Review specific commit
+  --title <title>     Optional title
+
+Options (after subcommand):
+  --model <model>     Override model
+  --reasoning <level> Override reasoning level
+  --read-only         Read-only sandbox (no writes/exec)
+  --dangerous         Full system access, no sandbox
+
+Examples:
+  subcodex new store-design "Design a store interface for the indexer"
+  subcodex resume store-design-x7k2 "Now add caching"
+  subcodex review --base main my-review
+  subcodex list
+
+Config: ~/.subcodex/config.json
+Conversations: ~/.subcodex/conversations/<name>.txt
+EOF
+}
+
+ensure_dir() {
+  mkdir -p "$SUBCODEX_DIR"
+  mkdir -p "$CONVERSATIONS_DIR"
+  if [[ ! -f "$SESSIONS_FILE" ]]; then
+    echo '{}' > "$SESSIONS_FILE"
+  fi
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "$DEFAULT_CONFIG" > "$CONFIG_FILE"
+  fi
+}
+
+get_config() {
+  local key="$1"
+  local default="$2"
+  jq -r --arg key "$key" --arg default "$default" '.[$key] // $default' "$CONFIG_FILE" 2>/dev/null || echo "$default"
+}
+
+generate_suffix() {
+  LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom | head -c 4
+}
+
+get_session_uuid() {
+  local name="$1"
+  jq -r --arg name "$name" '.[$name].codex_uuid // empty' "$SESSIONS_FILE"
+}
+
+session_exists() {
+  local name="$1"
+  [[ -n "$(get_session_uuid "$name")" ]]
+}
+
+generate_unique_name() {
+  local base="$1"
+  local name
+  local attempts=0
+  while [[ $attempts -lt 100 ]]; do
+    name="${base}-$(generate_suffix)"
+    if ! session_exists "$name"; then
+      echo "$name"
+      return
+    fi
+    ((attempts++))
+  done
+  echo "Error: could not generate unique name after 100 attempts" >&2
+  exit 1
+}
+
+save_session() {
+  local name="$1"
+  local codex_uuid="$2"
+  local now
+  now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+  local tmp
+  tmp=$(mktemp)
+  jq --arg name "$name" \
+     --arg uuid "$codex_uuid" \
+     --arg now "$now" \
+     '.[$name] = {codex_uuid: $uuid, last_used: $now, created: (.[$name].created // $now)}' \
+     "$SESSIONS_FILE" > "$tmp"
+  mv "$tmp" "$SESSIONS_FILE"
+}
+
+find_codex_session_file() {
+  local uuid="$1"
+  find "$CODEX_SESSIONS_DIR" -name "*${uuid}.jsonl" 2>/dev/null | head -1
+}
+
+extract_conversation() {
+  local session_file="$1"
+  local conv_file="$2"
+  local name="$3"
+
+  cat > "$conv_file" <<EOF
+# $name
+
+Resume: subcodex resume $name "..."
+
+EOF
+
+  jq -rs '
+    .[] | select(.type == "event_msg") |
+    if .payload.type == "user_message" then
+      "<user>\n" + .payload.message + "\n</user>\n\n"
+    elif .payload.type == "agent_message" then
+      "<codex>\n" + .payload.message + "\n</codex>\n\n"
+    else
+      empty
+    end
+  ' "$session_file" >> "$conv_file"
+}
+
+write_conversation_header() {
+  local name="$1"
+  local conv_file="$CONVERSATIONS_DIR/${name}.txt"
+
+  cat > "$conv_file" <<EOF
+# $name
+
+Resume: subcodex resume $name "..."
+
+EOF
+}
+
+append_message() {
+  local name="$1"
+  local role="$2"
+  local content="$3"
+  local conv_file="$CONVERSATIONS_DIR/${name}.txt"
+
+  if [[ ! -f "$conv_file" ]]; then
+    write_conversation_header "$name"
+  fi
+
+  if [[ "$role" == "user" ]]; then
+    cat >> "$conv_file" <<EOF
+<user>
+$content
+</user>
+
+EOF
+  else
+    cat >> "$conv_file" <<EOF
+<codex>
+$content
+</codex>
+
+EOF
+  fi
+}
+
+list_sessions() {
+  ensure_dir
+  if [[ ! -s "$SESSIONS_FILE" ]] || [[ "$(cat "$SESSIONS_FILE")" == "{}" ]]; then
+    echo "No sessions."
+    return
+  fi
+
+  echo "Sessions:"
+  echo ""
+  jq -r 'to_entries | sort_by(.value.last_used) | reverse | .[] | "  \(.key)\n    last_used: \(.value.last_used)\n"' "$SESSIONS_FILE"
+}
+
+import_session() {
+  local name=""
+  local uuid=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name)
+        shift
+        name="$1"
+        shift
+        ;;
+      --uuid)
+        shift
+        uuid="$1"
+        shift
+        ;;
+      *)
+        echo "Error: unknown option '$1'" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "Error: --name required" >&2
+    exit 1
+  fi
+  if [[ -z "$uuid" ]]; then
+    echo "Error: --uuid required" >&2
+    exit 1
+  fi
+
+  ensure_dir
+
+  if session_exists "$name"; then
+    echo "Error: session '$name' already exists" >&2
+    exit 1
+  fi
+
+  local session_file
+  session_file=$(find_codex_session_file "$uuid")
+
+  local conv_file="$CONVERSATIONS_DIR/${name}.txt"
+
+  if [[ -n "$session_file" && -f "$session_file" ]]; then
+    echo "Found Codex session file: $session_file"
+    echo "Extracting conversation..."
+    extract_conversation "$session_file" "$conv_file" "$name"
+    echo "Conversation extracted."
+  else
+    echo "Warning: Codex session file not found for UUID $uuid"
+    echo "Creating empty conversation file..."
+    write_conversation_header "$name"
+  fi
+
+  save_session "$name" "$uuid"
+
+  echo ""
+  echo "Imported: $name"
+  echo "Resume: subcodex resume $name \"...\""
+}
+
+# Build codex command with common options
+build_codex_cmd() {
+  local mode="$1"
+  local model="$2"
+  local reasoning="$3"
+
+  local cmd=(codex exec --skip-git-repo-check)
+
+  # Mode flag
+  case "$mode" in
+    full-auto)
+      cmd+=(--full-auto)
+      ;;
+    read-only)
+      cmd+=(--sandbox read-only)
+      ;;
+    dangerous|dangerously-bypass-approvals-and-sandbox)
+      cmd+=(--dangerously-bypass-approvals-and-sandbox)
+      ;;
+    *)
+      cmd+=(--full-auto)
+      ;;
+  esac
+
+  # Web search
+  local web_search
+  web_search=$(get_config "web-search" "true")
+  if [[ "$web_search" == "true" ]]; then
+    cmd+=(--enable web_search_request)
+  fi
+
+  # Model
+  if [[ -n "$model" ]]; then
+    cmd+=(-m "$model")
+  fi
+
+  # Reasoning
+  if [[ -n "$reasoning" ]]; then
+    cmd+=(-c "model_reasoning_effort=$reasoning")
+  fi
+
+  echo "${cmd[@]}"
+}
+
+run_new() {
+  local name="$1"
+  local prompt="$2"
+  local model="$3"
+  local reasoning="$4"
+  local mode="$5"
+
+  ensure_dir
+
+  # Generate unique session name
+  local session_name
+  session_name=$(generate_unique_name "$name")
+
+  # Save user message BEFORE calling codex
+  append_message "$session_name" "user" "$prompt"
+
+  # Get config values (CLI overrides take precedence)
+  [[ -z "$mode" ]] && mode=$(get_config "mode" "full-auto")
+  [[ -z "$model" ]] && model=$(get_config "model" "")
+  [[ -z "$reasoning" ]] && reasoning=$(get_config "reasoning" "")
+
+  # Build command
+  local cmd
+  read -ra cmd <<< "$(build_codex_cmd "$mode" "$model" "$reasoning")"
+
+  local tmp_output
+  tmp_output=$(mktemp)
+  trap "rm -f $tmp_output" EXIT
+
+  echo "--- $session_name ---"
+  echo ""
+  echo "[Waiting for Codex...]"
+  echo ""
+
+  set +e
+  verbose_output=$("${cmd[@]}" -o "$tmp_output" "$prompt" 2>&1)
+  exit_code=$?
+  set -e
+
+  # Check for errors
+  if [[ $exit_code -ne 0 ]] || echo "$verbose_output" | grep -q '^ERROR'; then
+    local json_error
+    json_error=$(echo "$verbose_output" | awk '/^ERROR: \{$/,/^\}$/' | sed '1s/^ERROR: //' | jq -r '.error.message // empty' 2>/dev/null)
+    if [[ -n "$json_error" ]]; then
+      echo "Error: $json_error" >&2
+    else
+      # Show full output so user can see what went wrong
+      echo "Codex failed (exit $exit_code):" >&2
+      echo "$verbose_output" >&2
+    fi
+    exit 1
+  fi
+
+  local session_uuid
+  session_uuid=$(echo "$verbose_output" | grep -o 'session id: [a-f0-9-]*' | head -1 | cut -d' ' -f3)
+
+  local reply
+  reply=$(cat "$tmp_output")
+
+  if [[ -n "$session_uuid" ]]; then
+    append_message "$session_name" "codex" "$reply"
+    save_session "$session_name" "$session_uuid"
+  fi
+
+  echo "$reply"
+  echo ""
+  echo "---"
+  echo "Session: $session_name"
+  echo "Resume: subcodex resume $session_name \"...\""
+}
+
+run_resume() {
+  local name="$1"
+  local prompt="$2"
+  local model="$3"
+  local reasoning="$4"
+  local mode="$5"
+
+  ensure_dir
+
+  # Check session exists
+  local existing_uuid
+  existing_uuid=$(get_session_uuid "$name")
+
+  if [[ -z "$existing_uuid" ]]; then
+    echo "Error: session '$name' not found" >&2
+    echo "Use 'subcodex list' to see available sessions" >&2
+    echo "Use 'subcodex new <name> \"prompt\"' to create a new session" >&2
+    exit 1
+  fi
+
+  # Save user message BEFORE calling codex
+  append_message "$name" "user" "$prompt"
+
+  # Get config values (CLI overrides take precedence)
+  [[ -z "$mode" ]] && mode=$(get_config "mode" "full-auto")
+  [[ -z "$model" ]] && model=$(get_config "model" "")
+  [[ -z "$reasoning" ]] && reasoning=$(get_config "reasoning" "")
+
+  # Build command
+  local cmd
+  read -ra cmd <<< "$(build_codex_cmd "$mode" "$model" "$reasoning")"
+
+  local tmp_output
+  tmp_output=$(mktemp)
+  trap "rm -f $tmp_output" EXIT
+
+  echo "--- $name ---"
+  echo ""
+  echo "[Waiting for Codex...]"
+  echo ""
+
+  set +e
+  verbose_output=$("${cmd[@]}" -o "$tmp_output" resume "$existing_uuid" "$prompt" 2>&1)
+  exit_code=$?
+  set -e
+
+  # Check for errors
+  if [[ $exit_code -ne 0 ]] || echo "$verbose_output" | grep -q '^ERROR'; then
+    local json_error
+    json_error=$(echo "$verbose_output" | awk '/^ERROR: \{$/,/^\}$/' | sed '1s/^ERROR: //' | jq -r '.error.message // empty' 2>/dev/null)
+    if [[ -n "$json_error" ]]; then
+      echo "Error: $json_error" >&2
+    else
+      # Show full output so user can see what went wrong
+      echo "Codex failed (exit $exit_code):" >&2
+      echo "$verbose_output" >&2
+    fi
+    exit 1
+  fi
+
+  local reply
+  reply=$(cat "$tmp_output")
+
+  append_message "$name" "codex" "$reply"
+  save_session "$name" "$existing_uuid"
+
+  echo "$reply"
+  echo ""
+  echo "---"
+  echo "Session: $name"
+  echo "Resume: subcodex resume $name \"...\""
+}
+
+run_review() {
+  local name="$1"
+  local target="$2"
+  local target_arg="$3"
+  local custom_prompt="$4"
+  local title="$5"
+  local model="$6"
+  local reasoning="$7"
+
+  ensure_dir
+
+  # Build codex command - reviews use JSON output
+  local cmd=(codex exec --skip-git-repo-check --json)
+
+  # Model
+  if [[ -n "$model" ]]; then
+    cmd+=(-c "model=$model")
+  fi
+
+  # Reasoning (default xhigh for reviews)
+  local effective_reasoning="${reasoning:-$(get_config "review-reasoning" "xhigh")}"
+  cmd+=(-c "model_reasoning_effort=$effective_reasoning")
+
+  # Review subcommand
+  cmd+=(review)
+
+  # Title if provided
+  if [[ -n "$title" ]]; then
+    cmd+=(--title "$title")
+  fi
+
+  # Target
+  case "$target" in
+    uncommitted)
+      cmd+=(--uncommitted)
+      ;;
+    base)
+      cmd+=(--base "$target_arg")
+      ;;
+    commit)
+      cmd+=(--commit "$target_arg")
+      ;;
+    custom)
+      cmd+=("$custom_prompt")
+      ;;
+  esac
+
+  # Generate unique name
+  local actual_name
+  actual_name=$(generate_unique_name "$name")
+
+  # Build prompt description for conversation log
+  local prompt_desc
+  case "$target" in
+    uncommitted) prompt_desc="[Review uncommitted changes]" ;;
+    base) prompt_desc="[Review changes against $target_arg]" ;;
+    commit) prompt_desc="[Review commit $target_arg]" ;;
+    custom) prompt_desc="$custom_prompt" ;;
+  esac
+  if [[ -n "$title" ]]; then
+    prompt_desc="$prompt_desc (title: $title)"
+  fi
+
+  # Save user message BEFORE calling codex
+  append_message "$actual_name" "user" "$prompt_desc"
+
+  echo "--- $actual_name ---"
+  echo ""
+  echo "[Waiting for Codex review...]"
+  echo ""
+
+  # Run and capture JSON output
+  set +e
+  output=$("${cmd[@]}" 2>&1)
+  exit_code=$?
+  set -e
+
+  # Check for errors
+  local error_msg=""
+  if echo "$output" | grep -q '"turn.failed"'; then
+    error_msg=$(echo "$output" | grep '"turn.failed"' | jq -r '.error.message' 2>/dev/null)
+  fi
+  if [[ -n "$error_msg" ]]; then
+    echo "Error: $error_msg" >&2
+    exit 1
+  fi
+  if [[ $exit_code -ne 0 ]]; then
+    echo "Codex review failed (exit $exit_code):" >&2
+    echo "$output" >&2
+    exit $exit_code
+  fi
+
+  # Extract final response from JSON events
+  local reply
+  reply=$(echo "$output" | jq -rs '[.[] | select(.type == "item.completed" and .item.type == "agent_message")] | .[0].item.text // empty' 2>/dev/null || true)
+
+  if [[ -z "$reply" ]]; then
+    echo "Error: No response received from Codex" >&2
+    echo "Raw output:" >&2
+    echo "$output" >&2
+    exit 1
+  fi
+
+  # Extract session ID
+  local session_uuid
+  session_uuid=$(echo "$output" | jq -r 'select(.type == "thread.started") | .thread_id' 2>/dev/null | head -1)
+
+  if [[ -n "$session_uuid" ]]; then
+    append_message "$actual_name" "codex" "$reply"
+    save_session "$actual_name" "$session_uuid"
+  fi
+
+  echo "$reply"
+  echo ""
+  echo "---"
+  echo "Session: $actual_name"
+  echo "Resume: subcodex resume $actual_name \"...\""
+}
+
+# Get prompt from args or stdin
+get_prompt() {
+  if [[ $# -gt 0 ]]; then
+    echo "$*"
+  elif [[ ! -t 0 ]]; then
+    cat
+  else
+    echo ""
+  fi
+}
+
+# Main argument parsing
+if [[ $# -eq 0 ]]; then
+  show_help
+  exit 0
+fi
+
+# Global options (parsed first)
+opt_model=""
+opt_reasoning=""
+
+case "$1" in
+  --help|-h)
+    show_help
+    exit 0
+    ;;
+  list)
+    list_sessions
+    exit 0
+    ;;
+  import)
+    shift
+    import_session "$@"
+    exit 0
+    ;;
+  new)
+    shift
+    # Parse options
+    opt_mode=""
+    while [[ $# -gt 0 && "$1" == --* ]]; do
+      case "$1" in
+        --model)
+          shift
+          opt_model="$1"
+          shift
+          ;;
+        --reasoning)
+          shift
+          opt_reasoning="$1"
+          shift
+          ;;
+        --read-only)
+          opt_mode="read-only"
+          shift
+          ;;
+        --dangerous)
+          opt_mode="dangerous"
+          shift
+          ;;
+        *)
+          echo "Error: unknown option '$1'" >&2
+          exit 1
+          ;;
+      esac
+    done
+
+    if [[ $# -eq 0 ]]; then
+      echo "Error: session name required" >&2
+      echo "Usage: subcodex new <name> \"prompt\"" >&2
+      exit 1
+    fi
+
+    name="$1"
+    shift
+
+    prompt=$(get_prompt "$@")
+    if [[ -z "$prompt" ]]; then
+      echo "Error: prompt required" >&2
+      echo "Usage: subcodex new $name \"prompt\"" >&2
+      exit 1
+    fi
+
+    run_new "$name" "$prompt" "$opt_model" "$opt_reasoning" "$opt_mode"
+    exit 0
+    ;;
+  resume)
+    shift
+    # Parse options
+    opt_mode=""
+    while [[ $# -gt 0 && "$1" == --* ]]; do
+      case "$1" in
+        --model)
+          shift
+          opt_model="$1"
+          shift
+          ;;
+        --reasoning)
+          shift
+          opt_reasoning="$1"
+          shift
+          ;;
+        --read-only)
+          opt_mode="read-only"
+          shift
+          ;;
+        --dangerous)
+          opt_mode="dangerous"
+          shift
+          ;;
+        *)
+          echo "Error: unknown option '$1'" >&2
+          exit 1
+          ;;
+      esac
+    done
+
+    if [[ $# -eq 0 ]]; then
+      echo "Error: session name required" >&2
+      echo "Usage: subcodex resume <name> \"prompt\"" >&2
+      exit 1
+    fi
+
+    name="$1"
+    shift
+
+    prompt=$(get_prompt "$@")
+    if [[ -z "$prompt" ]]; then
+      echo "Error: prompt required" >&2
+      echo "Usage: subcodex resume $name \"prompt\"" >&2
+      exit 1
+    fi
+
+    run_resume "$name" "$prompt" "$opt_model" "$opt_reasoning" "$opt_mode"
+    exit 0
+    ;;
+  review)
+    shift
+    # Parse review-specific options
+    review_target=""
+    review_target_arg=""
+    review_title=""
+    review_model=""
+    review_reasoning=""
+    review_name=""
+
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --uncommitted)
+          [[ -n "$review_target" ]] && { echo "Error: Cannot combine --uncommitted with --$review_target" >&2; exit 1; }
+          review_target="uncommitted"
+          shift
+          ;;
+        --base)
+          [[ -n "$review_target" ]] && { echo "Error: Cannot combine --base with --$review_target" >&2; exit 1; }
+          shift
+          [[ -z "$1" || "$1" == --* ]] && { echo "Error: --base requires a branch argument" >&2; exit 1; }
+          review_target="base"
+          review_target_arg="$1"
+          shift
+          ;;
+        --commit)
+          [[ -n "$review_target" ]] && { echo "Error: Cannot combine --commit with --$review_target" >&2; exit 1; }
+          shift
+          [[ -z "$1" || "$1" == --* ]] && { echo "Error: --commit requires a SHA argument" >&2; exit 1; }
+          review_target="commit"
+          review_target_arg="$1"
+          shift
+          ;;
+        --title)
+          shift
+          [[ -z "$1" || "$1" == --* ]] && { echo "Error: --title requires an argument" >&2; exit 1; }
+          review_title="$1"
+          shift
+          ;;
+        --model)
+          shift
+          [[ -z "$1" || "$1" == --* ]] && { echo "Error: --model requires an argument" >&2; exit 1; }
+          review_model="$1"
+          shift
+          ;;
+        --reasoning)
+          shift
+          [[ -z "$1" || "$1" == --* ]] && { echo "Error: --reasoning requires an argument" >&2; exit 1; }
+          review_reasoning="$1"
+          shift
+          ;;
+        -*)
+          echo "Error: Unknown review option: $1" >&2
+          exit 1
+          ;;
+        *)
+          review_name="$1"
+          shift
+          break
+          ;;
+      esac
+    done
+
+    if [[ -z "$review_name" ]]; then
+      echo "Error: review requires a session name" >&2
+      echo "Usage: subcodex review [--uncommitted|--base <branch>|--commit <sha>] <name>" >&2
+      exit 1
+    fi
+
+    # If no target, read custom prompt from remaining args or stdin
+    review_custom=""
+    if [[ -z "$review_target" ]]; then
+      review_custom=$(get_prompt "$@")
+      if [[ -z "$review_custom" ]]; then
+        echo "Error: review requires a target (--uncommitted, --base, --commit) or custom prompt" >&2
+        echo "Usage: subcodex review --uncommitted <name>" >&2
+        echo "       subcodex review <name> \"custom review prompt\"" >&2
+        exit 1
+      fi
+      review_target="custom"
+    fi
+
+    ensure_dir
+    run_review "$review_name" "$review_target" "$review_target_arg" "$review_custom" "$review_title" "$review_model" "$review_reasoning"
+    exit 0
+    ;;
+  *)
+    echo "Error: unknown command '$1'" >&2
+    echo "Commands: new, resume, review, list, import" >&2
+    echo "Run 'subcodex --help' for usage" >&2
+    exit 1
+    ;;
+esac
