@@ -9,109 +9,79 @@ description: |
 
 Named Codex sessions that persist across conversation compacts.
 
-## Codex Capabilities
+## Execution
 
-**Regular sessions** (default `--full-auto`):
-- Runs in **same working directory** as Claude Code
-- Can **read** any file on the system
-- Can **write** files in the workspace (current project)
-- Can **execute** shell commands (git, npm, cargo, etc.)
-
-**Review sessions** (`subcodex review`):
-- Read-only - can only read files, cannot write or execute commands
-
-**Dangerous mode** (`--dangerous`):
-- Full system access, no sandbox restrictions
-
-## CRITICAL: Execution Rules
-
-1. **NEVER run in background** - run synchronously and wait
-2. **High timeout** - at least 600000ms (10 min), ideally 1200000ms (20 min)
-3. **Be patient** - Codex can take 5-30+ minutes. Just wait for completion.
-4. **One call per session at a time** - can run different sessions in parallel, but same session is sequential
-5. **Requires jq** - if you get a `jq: command not found` error, install it (`brew install jq` or `apt install jq`)
-
-## Usage
+**ALWAYS run in background** — Codex takes 1-30+ minutes. Use `run_in_background: true` and stop immediately. You'll be notified via `<task-notification>` when Codex responds.
 
 ```bash
-# New session - creates "my-task-x7k2" and runs prompt with Codex
+# Start a session (runs in background)
 ./skills/subcodex/subcodex new my-task <<'EOF'
 Your prompt here.
 EOF
 
-# Resume session - continues existing session with new prompt
+# Resume a session
 ./skills/subcodex/subcodex resume my-task-x7k2 <<'EOF'
 Follow-up prompt.
 EOF
 
 # List sessions
 ./skills/subcodex/subcodex list
-
-# Import existing Codex session (user provides UUID)
-./skills/subcodex/subcodex import --name <name> --uuid <codex-uuid>
 ```
 
-Both `new` and `resume` are long-running commands that send the prompt to Codex and wait for completion. Use the full session name from output (e.g., `my-task-x7k2`) when resuming.
+After starting a background command, **stop and tell the user you're waiting for Codex**. Don't poll or check — you'll get the response automatically.
+
+## Codex Capabilities
+
+**By default, Codex can read, write, and execute** — just like you. It works in the same directory with full access to edit files and run commands. If you want changes made, tell Codex to make them directly.
+
+| Mode | Read | Write | Execute |
+|------|------|-------|---------|
+| Regular (default) | Anywhere | Workspace | Yes |
+| Review (`subcodex review`) | Anywhere | No | No |
+| Dangerous (`--dangerous`) | Anywhere | Anywhere | Yes |
+
+## Options
+
+```bash
+./skills/subcodex/subcodex new [options] <name> [prompt]
+```
+
+- `--reasoning` — low, medium, high, xhigh
+- `--model` — gpt-5.2 (default), gpt-5.2-codex, gpt-5.1-codex-max, gpt-5-codex-mini
+- `--read-only` — Read-only sandbox
+- `--dangerous` — Full system access
 
 ## Code Reviews
 
 ```bash
-# Review uncommitted changes
-./skills/subcodex/subcodex review --uncommitted my-review
+./skills/subcodex/subcodex review [options] <name> [prompt]
 
-# Review against base branch
-./skills/subcodex/subcodex review --base main my-feature-review
-
-# Review specific commit
-./skills/subcodex/subcodex review --commit HEAD my-commit-review
-
-# Custom review prompt
-./skills/subcodex/subcodex review my-security-review <<'EOF'
-Check src/auth.rs for security issues.
-EOF
-
-# With options
-./skills/subcodex/subcodex review --base main --title "Feature X" my-review
+# Examples
+subcodex review --uncommitted my-review
+subcodex review --base main my-feature-review
+subcodex review --commit HEAD my-commit-review
 ```
 
-Reviews use `xhigh` reasoning by default. Resume works the same as regular sessions.
+Reviews default to `--reasoning xhigh` and read-only mode.
 
-## Options
+## Collaboration Philosophy
 
-Options go after the subcommand:
+**Claude leads, Codex executes.** Use Codex to poke holes in your designs and implement hard tasks. Push back on over-engineering.
 
-```bash
-./skills/subcodex/subcodex new --reasoning high my-task <<'EOF'
-Your prompt here.
-EOF
-
-./skills/subcodex/subcodex new --read-only my-task "Review this code"
-./skills/subcodex/subcodex new --dangerous my-task "Run system commands"
-```
-
-Available options:
-- `--reasoning`: low, medium, high, xhigh
-- `--model`: gpt-5.2 (default), gpt-5.2-codex, gpt-5.1-codex-max, gpt-5-codex-mini
-- `--read-only`: Read-only sandbox
-- `--dangerous`: Full system access
-
-Config: `~/.subcodex/config.json` (created on first run)
-Conversations: `~/.subcodex/conversations/<name>.txt`
-
-## Working with Codex
-
-**Claude is in charge** - you have taste, Codex tends to over-engineer.
-
-Push for:
-- Simple, elegant, maintainable code
-- Less code - use existing functions, simpler approaches
+Push for simple, elegant, maintainable code:
+- Less code, fewer abstractions
+- Use existing functions
 - Fail-fast over fallbacks
-- No shortcuts, no "just in case" code, no premature abstractions
+- No "just in case" code
 
-## Collaboration Flow
+Typical flow:
+1. Claude proposes approach
+2. Codex reviews/suggests
+3. Claude decides
+4. Codex implements
+5. Claude reviews and course-corrects
 
-1. **Claude proposes** approach
-2. **Codex reviews** - may suggest improvements
-3. **Claude decides** direction
-4. **Codex implements**
-5. **Claude reviews** - course-correct via follow-up
+## Files
+
+- Config: `~/.subcodex/config.json`
+- Conversations: `~/.subcodex/conversations/<name>.txt`
