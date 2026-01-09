@@ -32,6 +32,7 @@ Review options:
   --uncommitted       Review uncommitted changes
   --base <branch>     Review against base branch
   --commit <sha>      Review specific commit
+  --custom            Add custom instructions to review (requires prompt)
   --title <title>     Optional title
 
 Options (after subcommand):
@@ -44,6 +45,8 @@ Examples:
   subcodex new store-design "Design a store interface for the indexer"
   subcodex resume store-design-x7k2 "Now add caching"
   subcodex review --base main my-review
+  subcodex review --uncommitted --custom my-review "Focus on security issues"
+  subcodex review my-review "Check src/auth.rs for SQL injection"
   subcodex list
 
 Config: ~/.subcodex/config.json
@@ -487,9 +490,14 @@ run_review() {
       cmd+=(--commit "$target_arg")
       ;;
     custom)
-      cmd+=("$custom_prompt")
+      # custom-only review (no target flag)
       ;;
   esac
+
+  # Add custom prompt if provided (works with or without target)
+  if [[ -n "$custom_prompt" ]]; then
+    cmd+=("$custom_prompt")
+  fi
 
   # Generate unique name
   local actual_name
@@ -501,8 +509,11 @@ run_review() {
     uncommitted) prompt_desc="[Review uncommitted changes]" ;;
     base) prompt_desc="[Review changes against $target_arg]" ;;
     commit) prompt_desc="[Review commit $target_arg]" ;;
-    custom) prompt_desc="$custom_prompt" ;;
+    custom) prompt_desc="[Custom review]" ;;
   esac
+  if [[ -n "$custom_prompt" ]]; then
+    prompt_desc="$prompt_desc: $custom_prompt"
+  fi
   if [[ -n "$title" ]]; then
     prompt_desc="$prompt_desc (title: $title)"
   fi
@@ -707,6 +718,7 @@ case "$1" in
     review_model=""
     review_reasoning=""
     review_name=""
+    review_has_custom_flag=false
 
     while [[ $# -gt 0 ]]; do
       case "$1" in
@@ -729,6 +741,10 @@ case "$1" in
           [[ -z "$1" || "$1" == --* ]] && { echo "Error: --commit requires a SHA argument" >&2; exit 1; }
           review_target="commit"
           review_target_arg="$1"
+          shift
+          ;;
+        --custom)
+          review_has_custom_flag=true
           shift
           ;;
         --title)
@@ -763,21 +779,33 @@ case "$1" in
 
     if [[ -z "$review_name" ]]; then
       echo "Error: review requires a session name" >&2
-      echo "Usage: subcodex review [--uncommitted|--base <branch>|--commit <sha>] <name>" >&2
+      echo "Usage: subcodex review [--uncommitted|--base <branch>|--commit <sha>] [--custom] <name> [prompt]" >&2
       exit 1
     fi
 
-    # If no target, read custom prompt from remaining args or stdin
-    review_custom=""
+    # Read custom prompt from remaining args or stdin
+    review_custom=$(get_prompt "$@")
+
+    # Validate usage
     if [[ -z "$review_target" ]]; then
-      review_custom=$(get_prompt "$@")
+      # No target flag - must have custom prompt (standalone custom review)
       if [[ -z "$review_custom" ]]; then
-        echo "Error: review requires a target (--uncommitted, --base, --commit) or custom prompt" >&2
+        echo "Error: review requires a target (--uncommitted, --base, --commit) or a custom prompt" >&2
         echo "Usage: subcodex review --uncommitted <name>" >&2
         echo "       subcodex review <name> \"custom review prompt\"" >&2
         exit 1
       fi
       review_target="custom"
+    elif [[ -n "$review_custom" && "$review_has_custom_flag" != true ]]; then
+      # Has target flag AND prompt, but no --custom flag
+      echo "Error: To add custom instructions to a review, use --custom flag" >&2
+      echo "Usage: subcodex review --uncommitted --custom <name> \"focus on security\"" >&2
+      exit 1
+    elif [[ "$review_has_custom_flag" == true && -z "$review_custom" ]]; then
+      # Has --custom flag but no prompt
+      echo "Error: --custom requires a prompt (as argument or stdin)" >&2
+      echo "Usage: subcodex review --uncommitted --custom <name> \"focus on security\"" >&2
+      exit 1
     fi
 
     ensure_dir
