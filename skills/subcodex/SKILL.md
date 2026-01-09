@@ -54,7 +54,7 @@ After starting a background command, **stop and tell the user you're waiting for
 ## Code Reviews
 
 ```bash
-# Target-based reviews (what to review is automatic)
+# Target-based reviews
 subcodex review --uncommitted my-review
 subcodex review --base main my-feature-review
 subcodex review --commit HEAD my-commit-review
@@ -63,17 +63,15 @@ subcodex review --commit HEAD my-commit-review
 subcodex review my-review "Check src/auth.rs for security issues"
 
 # Combined: target + custom instructions
-subcodex review --uncommitted --custom my-review "Focus on error handling"
-subcodex review --base main --custom my-review <<'EOF'
+subcodex review --uncommitted my-review "Focus on error handling"
+subcodex review --base main my-review <<'EOF'
 Focus on:
 - Security vulnerabilities
 - Performance issues
 EOF
 ```
 
-Reviews default to `--reasoning xhigh` and read-only mode.
-
-**Note:** To add custom instructions to a target-based review, you must use `--custom`. Without it, providing a prompt with `--uncommitted`/`--base`/`--commit` is an error.
+Reviews default to `--reasoning xhigh` and read-only mode. Custom prompts can be combined with any target flag.
 
 ## Collaboration Philosophy
 
