@@ -25,7 +25,7 @@ Then restart Claude Code.
 
 ## subcodex
 
-Collaborate with Codex like a subagent. Conversations are named and saved to files, so the agent can trivially pick up later with `subcodex list`.
+Collaborate with Codex like a subagent. Conversations are named and saved to files, so Claude can pick up later with `subcodex list`.
 
 ### Examples
 
@@ -41,12 +41,35 @@ Collaborate with Codex like a subagent. Conversations are named and saved to fil
 
 ### How it works
 
-Sessions get human-readable names instead of UUIDs. Conversations are saved as plain text files—just messages, no thinking tokens or clutter—so Claude can read them anytime to catch up.
+Sessions get human-readable names (with random suffixes) instead of UUIDs. Conversations are saved as plain text files—just messages, no thinking tokens or clutter—so Claude can read them anytime to catch up.
+
+### Session tracking
+
+`subcodex list` shows session status in real-time:
+- **status**: running or stopped (verified by PID)
+- **tool_calls**: number of tool calls made
+- **cwd**: working directory
+- **duration**: how long running sessions have been active
+
+### Config
+
+Edit `~/.subcodex/config.json`:
+
+```json
+{
+  "model": "gpt-5.2",
+  "reasoning": "high",
+  "review-reasoning": "xhigh",
+  "exclusive_cwd": true
+}
+```
+
+- `exclusive_cwd`: Only allow one Codex session per directory at a time (prevents conflicts)
 
 ### Prerequisites
 
 - [Codex CLI](https://github.com/openai/codex) installed and authenticated
-- [jq](https://jqlang.github.io/jq/) (`brew install jq` or `apt install jq`)
+- Python 3.10+
 
 ---
 

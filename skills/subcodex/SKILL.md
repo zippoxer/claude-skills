@@ -9,88 +9,79 @@ description: |
 
 Named Codex sessions that persist across conversation compacts.
 
-## Execution
-
-**ALWAYS run in background** — Codex takes 1-30+ minutes. Use `run_in_background: true` and stop immediately. You'll be notified via `<task-notification>` when Codex responds.
+## Quick Reference
 
 ```bash
-# Start a session (runs in background)
-./skills/subcodex/subcodex new my-task <<'EOF'
-Your prompt here.
-EOF
+# New session
+./skills/subcodex/subcodex new <name> "prompt"
 
-# Resume a session
-./skills/subcodex/subcodex resume my-task-x7k2 <<'EOF'
-Follow-up prompt.
-EOF
+# Resume session
+./skills/subcodex/subcodex resume <session-name> "prompt"
 
-# List sessions
+# List sessions (shows last 25, use --all for all)
 ./skills/subcodex/subcodex list
+
+# Code review
+./skills/subcodex/subcodex review --uncommitted <name>
+./skills/subcodex/subcodex review --base main <name> "focus on security..."
 ```
 
-After starting a background command, **stop and tell the user you're waiting for Codex**. Don't poll or check — you'll get the response automatically.
+## Critical: Background Execution
+
+**ALWAYS use `run_in_background: true`** — Codex takes 1-30+ minutes.
+
+After starting a background command:
+1. Tell the user you're waiting for Codex
+2. Stop immediately — don't poll or check
+3. You'll be notified via `<task-notification>` when Codex is done
 
 ## Codex Capabilities
 
-**By default, Codex can read, write, and execute** — just like you. It works in the same directory with full access to edit files and run commands. If you want changes made, tell Codex to make them directly.
+**Codex can read, write, and execute** — just like you. Tell it to make changes directly, not to provide diffs or suggestions.
 
-| Mode | Read | Write | Execute |
-|------|------|-------|---------|
-| Regular (default) | Anywhere | Workspace | Yes |
-| Review (`subcodex review`) | Anywhere | No | No |
-| Dangerous (`--dangerous`) | Anywhere | Anywhere | Yes |
+Options:
+- `--reasoning low|medium|high|xhigh` (default: high)
+- `--read-only` — read-only sandbox
+- `--dangerous` — full system access
 
-## Options
+## Sessions
 
+Session names get a random suffix: `my-task` becomes `my-task-x7k2`.
+
+Use the full name (with suffix) when resuming:
 ```bash
-./skills/subcodex/subcodex new [options] <name> [prompt]
+./skills/subcodex/subcodex resume my-task-x7k2 "continue with..."
 ```
 
-- `--reasoning` — low, medium, high, xhigh
-- `--model` — gpt-5.2 (default), gpt-5.2-codex, gpt-5.1-codex-max, gpt-5-codex-mini
-- `--read-only` — Read-only sandbox
-- `--dangerous` — Full system access
+`subcodex list` shows: status (running/stopped), tool_calls, cwd, duration.
 
 ## Code Reviews
 
 ```bash
-# Target-based reviews
-subcodex review --uncommitted my-review
-subcodex review --base main my-feature-review
-subcodex review --commit HEAD my-commit-review
+# Review uncommitted changes
+./skills/subcodex/subcodex review --uncommitted my-review
 
-# Custom review (you specify what to review)
-subcodex review my-review "Check src/auth.rs for security issues"
+# Review against branch
+./skills/subcodex/subcodex review --base main my-review
 
-# Combined: target + custom instructions
-subcodex review --uncommitted my-review "Focus on error handling"
-subcodex review --base main my-review <<'EOF'
-Focus on:
-- Security vulnerabilities
-- Performance issues
-EOF
+# Review specific commit
+./skills/subcodex/subcodex review --commit HEAD my-review
+
+# Add instructions
+./skills/subcodex/subcodex review --uncommitted my-review "read these relevant docs first, focus on security, suggest simplifications, .."
 ```
 
-Reviews default to `--reasoning xhigh` and read-only mode. Custom prompts can be combined with any target flag.
+Reviews use `--reasoning xhigh` and read-only mode by default.
 
-## Collaboration Philosophy
+## Collaboration
 
-**Claude leads, Codex executes.** Use Codex to poke holes in your designs and implement hard tasks. Push back on over-engineering.
-
-Push for simple, elegant, maintainable code:
-- Less code, fewer abstractions
-- Use existing functions
-- Fail-fast over fallbacks
-- No "just in case" code
+**Claude leads, Codex executes.** Use Codex to review designs and implement complex tasks. Push back on over-engineering.
 
 Typical flow:
 1. Claude proposes approach
-2. Codex reviews/suggests
+2. Codex reviews/critiques
 3. Claude decides
 4. Codex implements
-5. Claude reviews and course-corrects
+5. Claude reviews result
 
-## Files
-
-- Config: `~/.subcodex/config.json`
-- Conversations: `~/.subcodex/conversations/<name>.txt`
+Push for simple code: less abstraction, fail-fast, no "just in case" code.
