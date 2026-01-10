@@ -107,13 +107,16 @@ save_session() {
   local codex_uuid="$2"
   local now
   now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  local cwd
+  cwd=$(pwd)
 
   local tmp
   tmp=$(mktemp)
   jq --arg name "$name" \
      --arg uuid "$codex_uuid" \
      --arg now "$now" \
-     '.[$name] = {codex_uuid: $uuid, last_used: $now, created: (.[$name].created // $now)}' \
+     --arg cwd "$cwd" \
+     '.[$name] = {codex_uuid: $uuid, last_used: $now, created: (.[$name].created // $now), cwd: (.[$name].cwd // $cwd)}' \
      "$SESSIONS_FILE" > "$tmp"
   mv "$tmp" "$SESSIONS_FILE"
 }
@@ -127,10 +130,15 @@ extract_conversation() {
   local session_file="$1"
   local conv_file="$2"
   local name="$3"
+  # Try to extract cwd from session metadata
+  local cwd
+  cwd=$(jq -r '.payload.cwd // empty' "$session_file" 2>/dev/null | head -1)
+  [[ -z "$cwd" ]] && cwd="unknown"
 
   cat > "$conv_file" <<EOF
 # $name
 
+cwd: $cwd
 Resume: subcodex resume $name "..."
 
 EOF
@@ -150,10 +158,13 @@ EOF
 write_conversation_header() {
   local name="$1"
   local conv_file="$CONVERSATIONS_DIR/${name}.txt"
+  local cwd
+  cwd=$(pwd)
 
   cat > "$conv_file" <<EOF
 # $name
 
+cwd: $cwd
 Resume: subcodex resume $name "..."
 
 EOF
@@ -195,7 +206,7 @@ list_sessions() {
 
   echo "Sessions:"
   echo ""
-  jq -r 'to_entries | sort_by(.value.last_used) | reverse | .[] | "  \(.key)\n    last_used: \(.value.last_used)\n"' "$SESSIONS_FILE"
+  jq -r 'to_entries | sort_by(.value.last_used) | reverse | .[] | "  \(.key)\n    cwd: \(.value.cwd // "unknown")\n    last_used: \(.value.last_used)\n"' "$SESSIONS_FILE"
 }
 
 import_session() {
